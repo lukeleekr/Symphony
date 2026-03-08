@@ -1,0 +1,8 @@
+{
+  "name": "symphony",
+  "description": "Multi-turn Claude-Codex orchestration — plan, review, debate, build, fix, cleanup with true multi-turn GPT sessions via codex-reply",
+  "version": "1.0.0",
+  "author": {
+    "name": "Luke Lee"
+  }
+}
