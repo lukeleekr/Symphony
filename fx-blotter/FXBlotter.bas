@@ -12,10 +12,16 @@ Option Explicit
 '   → Blotter 시트 맨 아래에 Value / KRW / USD 행이 건별로 추가됨
 '   → 구분 코드와 Customer Rate은 수동 입력 (Rate 입력 시 반대 통화 자동 계산)
 '
-' 지원 포맷 (자동 감지):
-'   [포맷1] 주식 결제내역  : "10 Jun 2026 12 Jun 2026 ... KR7xxxxxxxxx ... BUY ..."
-'   [포맷2] FX 단건 요청   : "Sell KRW 872,000,000 USD 20260611"
-'   [포맷3] FX 주문 리스트 : "11-Jun-26 BUY KRW 2,439,375,000.00 Sell USD No Round"
+' 포맷 파서 구조 (고객사별 포맷 추가 가능):
+'   ParseLine()이 등록된 파서를 순서대로 시도하고, 모두 실패하면
+'   TryGeneric() 휴리스틱이 추정 파싱 후 노란색으로 표시(수동 확인용).
+'   새 고객 포맷 추가 방법은 README.md의 "새 포맷 추가" 섹션 참고.
+'
+'   등록된 파서:
+'     TryUbsFxOrderList     : "11-Jun-26 BUY KRW 2,439,375,000.00 Sell USD No Round"
+'     TryUbsFxRequest       : "Sell KRW 872,000,000 USD 20260611"
+'     TryUbsStockSettlement : 주식 결제내역 (ISIN KR+숫자10자리 토큰 기준)
+'     TryGeneric            : 미등록 포맷 폴백 (날짜+BUY/SELL+통화+금액 탐색)
 '
 ' 부호 규칙: 고객이 "매수"하는 통화 = 음수(-), 반대 통화 = 양수(+)
 '   - 주식 BUY      → 고객이 결제 대금 KRW 매수 → KRW 음수
@@ -41,6 +47,7 @@ Private Const COL_KRW As Long = 3       ' KRW 금액
 Private Const COL_USD As Long = 4       ' USD 금액
 Private Const COL_CRATE As Long = 5     ' Customer Rate (수동 입력)
 Private Const COL_IRATE As Long = 6     ' Interbank Rate (수동 입력)
+Private Const COL_SRC As Long = 7       ' 인식된 포맷 표시 (0 = 사용 안 함)
 Private Const BLOTTER_HEADER_ROW As Long = 1
 
 ' 변환 후 Paste 시트를 비울지 여부
@@ -66,14 +73,15 @@ Public Sub ConvertPaste()
         Exit Sub
     End If
 
-    ' 라인별 파싱: 각 레코드 = Array(밸류데이트, 통화, 부호 적용된 금액)
+    ' 라인별 파싱: 각 레코드 = Array(밸류데이트, 통화, 부호 적용된 금액, 포맷명)
     Dim recs As New Collection
     Dim ln As Variant, rec As Variant
-    Dim skipped As Long
+    Dim skipped As Long, generic As Long
     For Each ln In lines
         rec = ParseLine(CStr(ln))
         If IsArray(rec) Then
             recs.Add rec
+            If rec(3) = "GENERIC" Then generic = generic + 1
         Else
             skipped = skipped + 1
         End If
@@ -81,7 +89,8 @@ Public Sub ConvertPaste()
 
     If recs.Count = 0 Then
         MsgBox "인식 가능한 거래 라인이 없습니다." & vbCrLf & _
-               "(헤더·서명 등 " & skipped & "줄은 무시되었습니다)", vbExclamation
+               "(헤더·서명 등 " & skipped & "줄은 무시되었습니다)" & vbCrLf & vbCrLf & _
+               "새로운 고객 포맷이라면 README의 '새 포맷 추가'를 참고해 파서를 등록하세요.", vbExclamation
         Exit Sub
     End If
 
@@ -96,10 +105,16 @@ Public Sub ConvertPaste()
 
     If CLEAR_PASTE_AFTER Then wsP.UsedRange.ClearContents
 
-    MsgBox added & "건이 '" & SHEET_BLOTTER & "' 시트에 추가되었습니다." & vbCrLf & vbCrLf & _
-           "▶ 구분 코드와 Customer Rate을 입력하세요." & vbCrLf & _
-           "▶ Rate 입력 시 반대 통화 금액이 자동 계산됩니다." & _
-           IIf(skipped > 0, vbCrLf & "(헤더·서명 등 " & skipped & "줄 무시됨)", ""), vbInformation
+    Dim msg As String
+    msg = added & "건이 '" & SHEET_BLOTTER & "' 시트에 추가되었습니다." & vbCrLf & vbCrLf & _
+          "▶ 구분 코드와 Customer Rate을 입력하세요." & vbCrLf & _
+          "▶ Rate 입력 시 반대 통화 금액이 자동 계산됩니다."
+    If generic > 0 Then
+        msg = msg & vbCrLf & vbCrLf & "⚠ 미등록 포맷 " & generic & "건을 추정 파싱했습니다 (노란색 표시)." & vbCrLf & _
+              "   금액·부호·날짜를 반드시 확인하세요!"
+    End If
+    If skipped > 0 Then msg = msg & vbCrLf & "(헤더·서명 등 " & skipped & "줄 무시됨)"
+    MsgBox msg, IIf(generic > 0, vbExclamation, vbInformation)
 End Sub
 
 '=====================================================================
@@ -116,6 +131,7 @@ Public Sub SetupWorkbook()
         ws.Cells(BLOTTER_HEADER_ROW, COL_USD).Value = "USD"
         ws.Cells(BLOTTER_HEADER_ROW, COL_CRATE).Value = "Customer Rate"
         ws.Cells(BLOTTER_HEADER_ROW, COL_IRATE).Value = "Interbank Rate"
+        If COL_SRC > 0 Then ws.Cells(BLOTTER_HEADER_ROW, COL_SRC).Value = "Src(자동)"
         ws.Rows(BLOTTER_HEADER_ROW).Font.Bold = True
     End If
 
@@ -135,7 +151,9 @@ Public Sub SetupWorkbook()
 End Sub
 
 '=====================================================================
-' 라인 파싱 (포맷 자동 감지)
+' 파서 디스패처
+'   새 고객 포맷을 추가하려면 TryXxx 함수를 만들고 아래에 한 줄 추가.
+'   구체적인 파서일수록 위에, TryGeneric은 반드시 마지막에 둘 것.
 '=====================================================================
 Private Function ParseLine(ByVal raw As String) As Variant
     Dim s As String
@@ -146,14 +164,20 @@ Private Function ParseLine(ByVal raw As String) As Variant
     t = Split(s, " ")
 
     Dim rec As Variant
-    rec = TryFormat3(t)
-    If Not IsArray(rec) Then rec = TryFormat2(t)
-    If Not IsArray(rec) Then rec = TryFormat1(t)
+    rec = TryUbsFxOrderList(t)
+    If Not IsArray(rec) Then rec = TryUbsFxRequest(t)
+    If Not IsArray(rec) Then rec = TryUbsStockSettlement(t)
+    ' --- 새 고객사 파서는 여기에 추가 ---
+    If Not IsArray(rec) Then rec = TryGeneric(t)
     ParseLine = rec
 End Function
 
-' [포맷3] "11-Jun-26 BUY KRW 2,439,375,000.00 Sell USD No Round"
-Private Function TryFormat3(t() As String) As Variant
+'=====================================================================
+' UBS 포맷 파서
+'=====================================================================
+
+' [UBS FX 주문 리스트] "11-Jun-26 BUY KRW 2,439,375,000.00 Sell USD No Round"
+Private Function TryUbsFxOrderList(t() As String) As Variant
     If UBound(t) < 3 Then Exit Function
     Dim vd As Date
     If Not TryParseDate(t(0), vd) Then Exit Function
@@ -164,11 +188,11 @@ Private Function TryFormat3(t() As String) As Variant
     Dim amt As Double
     If Not TryParseNum(t(3), amt) Then Exit Function
     If side = "BUY" Then amt = -amt          ' 고객 매수 통화 = 음수
-    TryFormat3 = Array(vd, ccy, amt)
+    TryUbsFxOrderList = Array(vd, ccy, amt, "UBS-FXLIST")
 End Function
 
-' [포맷2] "Sell KRW 872,000,000 USD 20260611"  (밸류데이트는 뒤쪽 토큰에서 탐색)
-Private Function TryFormat2(t() As String) As Variant
+' [UBS FX 단건 요청] "Sell KRW 872,000,000 USD 20260611"  (밸류데이트는 뒤쪽 토큰에서 탐색)
+Private Function TryUbsFxRequest(t() As String) As Variant
     If UBound(t) < 3 Then Exit Function
     Dim side As String: side = UCase$(t(0))
     If side <> "BUY" And side <> "SELL" Then Exit Function
@@ -184,13 +208,13 @@ Private Function TryFormat2(t() As String) As Variant
     If Not found Then Exit Function
 
     If side = "BUY" Then amt = -amt          ' 고객 매수 통화 = 음수
-    TryFormat2 = Array(vd, ccy, amt)
+    TryUbsFxRequest = Array(vd, ccy, amt, "UBS-FXREQ")
 End Function
 
-' [포맷1] 주식 결제내역: ISIN(KR + 숫자 10자리) 토큰을 기준점으로 파싱
+' [UBS 주식 결제내역] ISIN(KR + 숫자 10자리) 토큰을 기준점으로 파싱
 '   ... <Trade Ref> <ISIN> <종목코드> <B/S> <수량> KRW <단가> ... KRW <결제금액> SETTLEMENT ...
 '   밸류데이트 = Settlement Date (라인 앞 4~6번째 토큰 "12 Jun 2026")
-Private Function TryFormat1(t() As String) As Variant
+Private Function TryUbsStockSettlement(t() As String) As Variant
     If UBound(t) < 10 Then Exit Function
 
     Dim i As Long, isinIdx As Long: isinIdx = -1
@@ -224,7 +248,61 @@ Private Function TryFormat1(t() As String) As Variant
 
     ' 주식 BUY → 고객이 결제 대금 KRW 매수 → KRW 음수 / SELL → 양수
     If side = "BUY" Then amt = -amt
-    TryFormat1 = Array(vd, "KRW", amt)
+    TryUbsStockSettlement = Array(vd, "KRW", amt, "UBS-STOCK")
+End Function
+
+'=====================================================================
+' 미등록 포맷 폴백 (휴리스틱)
+'   조건: 라인에 (1) 날짜, (2) BUY/SELL 토큰, (3) 통화 토큰 + 바로 뒤 숫자가
+'   모두 있으면 추정 파싱. 결과는 노란색으로 표시되어 수동 확인 필요.
+'   부호는 등록 파서와 동일: BUY = 해당 통화 매수 = 음수.
+'=====================================================================
+Private Function TryGeneric(t() As String) As Variant
+    If UBound(t) < 3 Then Exit Function
+
+    ' (1) 날짜: 단일 토큰 형식 우선, 없으면 "12 Jun 2026" 3토큰 형식
+    Dim i As Long, vd As Date, hasDate As Boolean
+    For i = 0 To UBound(t)
+        If TryParseDate(t(i), vd) Then hasDate = True: Exit For
+    Next i
+    If Not hasDate Then
+        For i = 0 To UBound(t) - 2
+            If TryParseEngDate3(t(i), t(i + 1), t(i + 2), vd) Then hasDate = True: Exit For
+        Next i
+    End If
+    If Not hasDate Then Exit Function
+
+    ' (2) 첫 번째 BUY/SELL 토큰
+    Dim sideIdx As Long: sideIdx = -1
+    For i = 0 To UBound(t)
+        If UCase$(t(i)) = "BUY" Or UCase$(t(i)) = "SELL" Then sideIdx = i: Exit For
+    Next i
+    If sideIdx = -1 Then Exit Function
+    Dim side As String: side = UCase$(t(sideIdx))
+
+    ' (3) side 이후 가장 가까운 [통화 + 숫자] 쌍, 없으면 라인 전체에서 탐색
+    Dim ccy As String, amt As Double, found As Boolean
+    For i = sideIdx + 1 To UBound(t) - 1
+        If IsCcy(t(i)) Then
+            If TryParseNum(t(i + 1), amt) Then ccy = UCase$(t(i)): found = True: Exit For
+        End If
+    Next i
+    If Not found Then
+        For i = 0 To UBound(t) - 1
+            If IsCcy(t(i)) Then
+                If TryParseNum(t(i + 1), amt) Then ccy = UCase$(t(i)): found = True: Exit For
+            End If
+        Next i
+    End If
+    If Not found Then Exit Function
+
+    If side = "BUY" Then amt = -amt          ' 고객 매수 통화 = 음수
+    TryGeneric = Array(vd, ccy, amt, "GENERIC")
+End Function
+
+Private Function IsCcy(ByVal s As String) As Boolean
+    s = UCase$(Trim$(s))
+    IsCcy = (s = "KRW" Or s = "USD")
 End Function
 
 '=====================================================================
@@ -234,6 +312,7 @@ Private Sub WriteRecord(ws As Worksheet, ByVal r As Long, rec As Variant)
     Dim vd As Date: vd = rec(0)
     Dim ccy As String: ccy = CStr(rec(1))
     Dim amt As Double: amt = rec(2)
+    Dim fmt As String: fmt = CStr(rec(3))
 
     Dim rateAddr As String, krwAddr As String, usdAddr As String
     rateAddr = ws.Cells(r, COL_CRATE).Address(False, False)
@@ -257,12 +336,21 @@ Private Sub WriteRecord(ws As Worksheet, ByVal r As Long, rec As Variant)
     ws.Cells(r, COL_KRW).NumberFormat = "#,##0.00"
     ws.Cells(r, COL_USD).NumberFormat = "#,##0.00"
     ws.Cells(r, COL_CRATE).NumberFormat = "#,##0.00"
+
+    If COL_SRC > 0 Then ws.Cells(r, COL_SRC).Value = fmt
+
+    ' 미등록 포맷 추정 결과는 노란색으로 표시 → 수동 확인
+    If fmt = "GENERIC" Then
+        ws.Range(ws.Cells(r, COL_VALUE), ws.Cells(r, COL_USD)).Interior.Color = vbYellow
+    End If
 End Sub
 
 Private Function LastBlotterRow(ws As Worksheet) As Long
-    Dim c As Long, last As Long, v As Long
+    Dim c As Long, last As Long, v As Long, maxCol As Long
+    maxCol = COL_IRATE
+    If COL_SRC > maxCol Then maxCol = COL_SRC
     last = BLOTTER_HEADER_ROW
-    For c = COL_GUBUN To COL_IRATE
+    For c = COL_GUBUN To maxCol
         v = ws.Cells(ws.Rows.Count, c).End(xlUp).Row
         If v > last Then last = v
     Next c
@@ -407,6 +495,7 @@ Private Function TryParseEngDate3(ByVal dd As String, ByVal mmm As String, ByVal
     Dim m As Long
     m = MonthFromEng(mmm)
     If m = 0 Or Not IsAllDigits(dd) Or Not IsAllDigits(yyyy) Then Exit Function
+    If Len(yyyy) <> 4 Then Exit Function
     d = DateSerial(CLng(yyyy), m, CLng(dd))
     TryParseEngDate3 = True
 fail:
