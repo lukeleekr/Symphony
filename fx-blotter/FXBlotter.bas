@@ -27,6 +27,12 @@ Option Explicit
 '                             (Buy/Sell은 Qty 통화 기준: Buy = KRW 매수 = 음수)
 '     TryGsBackToBack       : "19810091287 2026-06-05 ... B KRW 4,005,376,488.00 1535.25 USD"
 '                             환율이 채워져 있는 백투백 거래 → 블로터에 넣지 않고 건너뜀!
+'     TryGsCreditDebit      : "2 CREDIT KRW 1,326,509,262 USD 5/21/2026 ..."
+'                             CREDIT/DEBIT의 매수/매도 매핑 미확정 → 노란색 검수.
+'                             본문 방향 문장이 같이 붙여넣어지면 그 방향 적용.
+'     TryGsNoSide           : "KRW 859,332,124 USD 5/27/2026" (방향 표기가 본문에만 있는 표)
+'                             본문의 "Sell KRW" 같은 문장을 같이 붙여넣으면 방향 자동 적용,
+'                             없으면 양수 + 노란색 검수
 '     TryGeneric            : 미등록 포맷 폴백 (날짜+BUY/SELL+통화+금액 탐색)
 '
 ' 부호 규칙: 고객이 "매수"하는 통화 = 음수(-), 반대 통화 = 양수(+)
@@ -82,20 +88,28 @@ Public Sub ConvertPaste()
     End If
 
     ' 라인별 파싱: 각 레코드 = Array(밸류데이트, 통화, 부호 적용된 금액, 포맷명)
+    ' 본문의 "Sell KRW" 같은 방향 문장은 기억해 뒀다가 방향 없는 표 줄에 적용
     Dim recs As New Collection
     Dim ln As Variant, rec As Variant
-    Dim skipped As Long, generic As Long, b2b As Long
+    Dim skipped As Long, review As Long, b2b As Long
+    Dim pendingSide As String, ctx As String
     For Each ln In lines
-        rec = ParseLine(CStr(ln))
-        If IsArray(rec) Then
-            If rec(3) = "B2B-SKIP" Then
-                b2b = b2b + 1            ' 백투백 거래: 블로터 제외
-            Else
-                recs.Add rec
-                If rec(3) = "GENERIC" Then generic = generic + 1
-            End If
-        Else
+        ctx = DirectionContext(CStr(ln))
+        If ctx <> "" Then
+            pendingSide = ctx
             skipped = skipped + 1
+        Else
+            rec = ParseLine(CStr(ln), pendingSide)
+            If IsArray(rec) Then
+                If rec(3) = "B2B-SKIP" Then
+                    b2b = b2b + 1            ' 백투백 거래: 블로터 제외
+                Else
+                    recs.Add rec
+                    If NeedsReview(CStr(rec(3))) Then review = review + 1
+                End If
+            Else
+                skipped = skipped + 1
+            End If
         End If
     Next ln
 
@@ -128,14 +142,14 @@ Public Sub ConvertPaste()
     msg = added & "건이 '" & SHEET_BLOTTER & "' 시트에 추가되었습니다." & vbCrLf & vbCrLf & _
           "▶ 구분 칸의 포맷명을 실제 구분 코드로 바꾸고 Customer Rate을 입력하세요." & vbCrLf & _
           "▶ Rate 입력 시 반대 통화 금액이 자동 계산됩니다."
-    If generic > 0 Then
-        msg = msg & vbCrLf & vbCrLf & "⚠ 미등록 포맷 " & generic & "건을 추정 파싱했습니다 (노란색 표시)." & vbCrLf & _
+    If review > 0 Then
+        msg = msg & vbCrLf & vbCrLf & "⚠ 확인 필요 " & review & "건 (노란색 표시): 미등록 포맷 추정 또는 방향 미확정." & vbCrLf & _
               "   금액·부호·날짜를 반드시 확인하세요!"
     End If
     If b2b > 0 Then msg = msg & vbCrLf & "백투백 거래 " & b2b & "건은 정책상 블로터에 넣지 않았습니다."
     If skipped > 0 Then msg = msg & vbCrLf & "(헤더·서명 등 " & skipped & "줄 무시됨)"
     msg = msg & vbCrLf & vbCrLf & "잘못 변환됐다면 [실행취소] 버튼으로 방금 추가한 " & added & "건을 삭제할 수 있습니다."
-    MsgBox msg, IIf(generic > 0, vbExclamation, vbInformation)
+    MsgBox msg, IIf(review > 0, vbExclamation, vbInformation)
 End Sub
 
 '=====================================================================
@@ -245,7 +259,7 @@ End Sub
 '   새 고객 포맷을 추가하려면 TryXxx 함수를 만들고 아래에 한 줄 추가.
 '   구체적인 파서일수록 위에, TryGeneric은 반드시 마지막에 둘 것.
 '=====================================================================
-Private Function ParseLine(ByVal raw As String) As Variant
+Private Function ParseLine(ByVal raw As String, ByVal pendingSide As String) As Variant
     Dim s As String
     s = NormalizeSpaces(raw)
     If Len(s) = 0 Then Exit Function
@@ -259,9 +273,39 @@ Private Function ParseLine(ByVal raw As String) As Variant
     If Not IsArray(rec) Then rec = TryUbsStockSettlement(t)
     If Not IsArray(rec) Then rec = TryGsProductOrder(t)
     If Not IsArray(rec) Then rec = TryGsBackToBack(t)
+    If Not IsArray(rec) Then rec = TryGsCreditDebit(t, pendingSide)
+    If Not IsArray(rec) Then rec = TryGsNoSide(t, pendingSide)
     ' --- 새 고객사 파서는 여기에 추가 ---
     If Not IsArray(rec) Then rec = TryGeneric(t)
     ParseLine = rec
+End Function
+
+' 본문 방향 문장 감지: 짧은 줄에 BUY 또는 SELL이 정확히 1회 + 통화 토큰 + 숫자 없음
+' (예: 이메일 본문의 "Sell KRW" → 이후 방향 없는 표 줄에 적용)
+Private Function DirectionContext(ByVal raw As String) As String
+    Dim s As String
+    s = NormalizeSpaces(raw)
+    If Len(s) = 0 Then Exit Function
+    Dim t() As String
+    t = Split(s, " ")
+    If UBound(t) > 11 Then Exit Function
+    Dim i As Long, nBuy As Long, nSell As Long, hasCcy As Boolean, dummy As Double
+    For i = 0 To UBound(t)
+        Select Case UCase$(t(i))
+            Case "BUY": nBuy = nBuy + 1
+            Case "SELL": nSell = nSell + 1
+        End Select
+        If IsCcy(t(i)) Then hasCcy = True
+        If TryParseNum(t(i), dummy) Then Exit Function   ' 금액이 있으면 거래 줄
+    Next i
+    If Not hasCcy Then Exit Function
+    If nBuy + nSell <> 1 Then Exit Function
+    DirectionContext = IIf(nBuy = 1, "BUY", "SELL")
+End Function
+
+' 노란색 검수 대상 여부: Generic 추정 또는 방향 미확정("...?") 태그
+Private Function NeedsReview(ByVal fmt As String) As Boolean
+    NeedsReview = (fmt = "GENERIC" Or InStr(fmt, "?") > 0)
 End Function
 
 '=====================================================================
@@ -451,6 +495,62 @@ Private Function TryGeneric(t() As String) As Variant
     TryGeneric = Array(vd, ccy, amt, "GENERIC")
 End Function
 
+' [GS CREDIT/DEBIT 통지] "2 CREDIT KRW 1,326,509,262 USD 5/21/2026 00102685 ..."
+'   CREDIT/DEBIT의 매수/매도 매핑이 미확정 → 본문 방향 문장(pendingSide)이 있으면
+'   그 방향을 적용하고, 없으면 양수로 넣은 뒤 노란색 검수("CREDIT?"/"DEBIT?")
+'   ※ 매핑이 확정되면 아래 pendingSide = "" 분기를 수정할 것
+Private Function TryGsCreditDebit(t() As String, ByVal pendingSide As String) As Variant
+    If UBound(t) < 3 Then Exit Function
+    Dim i As Long, w As String
+    For i = 0 To UBound(t) - 2
+        w = UCase$(t(i))
+        If w = "CREDIT" Or w = "DEBIT" Then
+            If IsCcy(t(i + 1)) Then
+                Dim amt As Double
+                If TryParseNum(t(i + 2), amt) Then
+                    Dim j As Long, vd As Date, found As Boolean
+                    For j = i + 3 To UBound(t)
+                        If TryParseDate(t(j), vd) Then found = True: Exit For
+                    Next j
+                    If Not found Then Exit Function
+                    If pendingSide = "BUY" Then
+                        TryGsCreditDebit = Array(vd, UCase$(t(i + 1)), -amt, "GS-" & w)
+                    ElseIf pendingSide = "SELL" Then
+                        TryGsCreditDebit = Array(vd, UCase$(t(i + 1)), amt, "GS-" & w)
+                    Else
+                        TryGsCreditDebit = Array(vd, UCase$(t(i + 1)), amt, w & "?")
+                    End If
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+End Function
+
+' [GS 방향 없는 표] "KRW 859,332,124 USD 5/27/2026" (CCY | AMOUNT | VS.CCY | VALUE DATE)
+'   방향이 이메일 본문에만 있는 포맷 → 본문 문장("Sell KRW")까지 같이 붙여넣으면
+'   자동 적용되고, 없으면 양수 + 노란색 검수("NOSIDE?")
+Private Function TryGsNoSide(t() As String, ByVal pendingSide As String) As Variant
+    If UBound(t) < 3 Then Exit Function
+    If Not IsCcy(t(0)) Then Exit Function
+    Dim amt As Double
+    If Not TryParseNum(t(1), amt) Then Exit Function
+    If Not IsCcy(t(2)) Then Exit Function
+    Dim i As Long, vd As Date, found As Boolean
+    For i = 3 To UBound(t)
+        If TryParseDate(t(i), vd) Then found = True: Exit For
+    Next i
+    If Not found Then Exit Function
+
+    If pendingSide = "BUY" Then
+        TryGsNoSide = Array(vd, UCase$(t(0)), -amt, "GS-NOSIDE")
+    ElseIf pendingSide = "SELL" Then
+        TryGsNoSide = Array(vd, UCase$(t(0)), amt, "GS-NOSIDE")
+    Else
+        TryGsNoSide = Array(vd, UCase$(t(0)), amt, "NOSIDE?")
+    End If
+End Function
+
 Private Function IsCcy(ByVal s As String) As Boolean
     s = UCase$(Trim$(s))
     IsCcy = (s = "KRW" Or s = "USD")
@@ -492,8 +592,8 @@ Private Sub WriteRecord(ws As Worksheet, ByVal r As Long, rec As Variant)
     ' 구분 칸에 인식된 포맷명을 미리 채움 → 실제 구분 코드로 덮어쓰면 됨
     ws.Cells(r, COL_GUBUN).Value = fmt
 
-    ' 미등록 포맷 추정 결과는 노란색으로 표시 → 수동 확인
-    If fmt = "GENERIC" Then
+    ' 미등록 포맷 추정 또는 방향 미확정 결과는 노란색으로 표시 → 수동 확인
+    If NeedsReview(fmt) Then
         ws.Range(ws.Cells(r, COL_VALUE), ws.Cells(r, COL_USD)).Interior.Color = vbYellow
     End If
 End Sub
