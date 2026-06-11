@@ -52,6 +52,9 @@ Private Const BLOTTER_HEADER_ROW As Long = 1
 ' 변환 후 Paste 시트를 비울지 여부
 Private Const CLEAR_PASTE_AFTER As Boolean = True
 
+' 실행취소용 마커 (마지막 변환으로 추가된 행 범위를 통합문서에 숨김 저장)
+Private Const UNDO_NAME As String = "FXB_UNDO"
+
 '=====================================================================
 ' 메인: Paste 시트 → Blotter 시트
 '=====================================================================
@@ -93,14 +96,17 @@ Public Sub ConvertPaste()
         Exit Sub
     End If
 
-    Dim r As Long
+    Dim r As Long, firstRow As Long
     r = LastBlotterRow(wsB) + 1
+    firstRow = r
     Dim added As Long
     For Each rec In recs
         WriteRecord wsB, r, rec
         r = r + 1
         added = added + 1
     Next rec
+
+    SaveUndoMarker firstRow, r - 1
 
     If CLEAR_PASTE_AFTER Then wsP.UsedRange.ClearContents
 
@@ -113,7 +119,78 @@ Public Sub ConvertPaste()
               "   금액·부호·날짜를 반드시 확인하세요!"
     End If
     If skipped > 0 Then msg = msg & vbCrLf & "(헤더·서명 등 " & skipped & "줄 무시됨)"
+    msg = msg & vbCrLf & vbCrLf & "잘못 변환됐다면 [실행취소] 버튼으로 방금 추가한 " & added & "건을 삭제할 수 있습니다."
     MsgBox msg, IIf(generic > 0, vbExclamation, vbInformation)
+End Sub
+
+'=====================================================================
+' 실행취소: 마지막 변환으로 추가된 행들을 삭제
+'   (매크로 실행 후에는 Excel 기본 Ctrl+Z가 동작하지 않으므로 자체 구현)
+'   - 한 단계만 지원: 가장 최근 변환 1회분만 되돌림
+'   - 변환 후 Blotter에서 직접 행을 추가/삭제했다면 위치가 어긋날 수 있음
+'     → 삭제 전 확인 대화상자에서 범위를 반드시 확인할 것
+'=====================================================================
+Public Sub UndoLastConvert()
+    Dim wsB As Worksheet
+    Set wsB = GetSheet(SHEET_BLOTTER)
+    If wsB Is Nothing Then
+        MsgBox "'" & SHEET_BLOTTER & "' 시트가 없습니다.", vbExclamation
+        Exit Sub
+    End If
+
+    Dim r1 As Long, r2 As Long
+    If Not LoadUndoMarker(r1, r2) Then
+        MsgBox "되돌릴 변환 내역이 없습니다." & vbCrLf & _
+               "(실행취소는 가장 최근 변환 1회분만 지원합니다)", vbExclamation
+        Exit Sub
+    End If
+
+    If r1 <= BLOTTER_HEADER_ROW Or r2 < r1 Or r2 > LastBlotterRow(wsB) Then
+        MsgBox "저장된 실행취소 범위(" & r1 & "~" & r2 & "행)가 현재 시트와 맞지 않습니다." & vbCrLf & _
+               "변환 이후 행을 추가/삭제한 것 같으니 직접 정리해 주세요.", vbExclamation
+        ClearUndoMarker
+        Exit Sub
+    End If
+
+    Dim preview As String
+    preview = CStr(wsB.Cells(r1, COL_GUBUN).Value) & " / " & _
+              CStr(wsB.Cells(r1, COL_VALUE).Value) & " / " & _
+              Format$(wsB.Cells(r1, COL_KRW).Value, "#,##0.00")
+
+    If MsgBox("마지막 변환으로 추가된 " & (r2 - r1 + 1) & "건 (" & r1 & "~" & r2 & "행)을 삭제할까요?" & vbCrLf & vbCrLf & _
+              "첫 행 미리보기: " & preview & vbCrLf & vbCrLf & _
+              "※ 변환 이후 Blotter에서 행을 추가/삭제했다면 범위가 어긋날 수 있으니 확인하세요.", _
+              vbYesNo + vbQuestion) <> vbYes Then Exit Sub
+
+    wsB.Rows(r1 & ":" & r2).Delete
+    ClearUndoMarker
+    MsgBox (r2 - r1 + 1) & "건이 삭제되었습니다.", vbInformation
+End Sub
+
+Private Sub SaveUndoMarker(ByVal r1 As Long, ByVal r2 As Long)
+    ClearUndoMarker
+    ThisWorkbook.Names.Add Name:=UNDO_NAME, RefersTo:="=""" & r1 & ":" & r2 & """", Visible:=False
+End Sub
+
+Private Function LoadUndoMarker(ByRef r1 As Long, ByRef r2 As Long) As Boolean
+    Dim s As String
+    On Error Resume Next
+    s = ThisWorkbook.Names(UNDO_NAME).RefersTo
+    On Error GoTo 0
+    s = Replace(Replace(Replace(s, "=", ""), """", ""), " ", "")
+    Dim p() As String
+    p = Split(s, ":")
+    If UBound(p) <> 1 Then Exit Function
+    If Not IsAllDigits(p(0)) Or Not IsAllDigits(p(1)) Then Exit Function
+    r1 = CLng(p(0))
+    r2 = CLng(p(1))
+    LoadUndoMarker = True
+End Function
+
+Private Sub ClearUndoMarker()
+    On Error Resume Next
+    ThisWorkbook.Names(UNDO_NAME).Delete
+    On Error GoTo 0
 End Sub
 
 '=====================================================================
@@ -547,9 +624,16 @@ Private Sub AddConvertButton(ws As Worksheet)
     Dim b As Button
     On Error Resume Next
     ws.Buttons("btnConvert").Delete
+    ws.Buttons("btnUndo").Delete
     On Error GoTo 0
+
     Set b = ws.Buttons.Add(ws.Columns(8).Left + 10, 10, 110, 32)
     b.Name = "btnConvert"
     b.Caption = "변환 →"
     b.OnAction = "ConvertPaste"
+
+    Set b = ws.Buttons.Add(ws.Columns(8).Left + 130, 10, 110, 32)
+    b.Name = "btnUndo"
+    b.Caption = "실행취소"
+    b.OnAction = "UndoLastConvert"
 End Sub
