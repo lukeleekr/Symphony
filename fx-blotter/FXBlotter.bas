@@ -41,13 +41,12 @@ Private Const SHEET_PASTE As String = "Paste"
 Private Const SHEET_BLOTTER As String = "Blotter"
 Private Const SHEET_HOLIDAYS As String = "Holidays"
 
-Private Const COL_GUBUN As Long = 1     ' 구분 코드 (수동 입력)
+Private Const COL_GUBUN As Long = 1     ' 구분 코드 — 인식된 포맷명이 미리 채워지며, 실제 코드로 덮어쓰면 됨
 Private Const COL_VALUE As Long = 2     ' Value (TDY/TOM/SPOT)
 Private Const COL_KRW As Long = 3       ' KRW 금액
 Private Const COL_USD As Long = 4       ' USD 금액
 Private Const COL_CRATE As Long = 5     ' Customer Rate (수동 입력)
 Private Const COL_IRATE As Long = 6     ' Interbank Rate (수동 입력)
-Private Const COL_SRC As Long = 7       ' 인식된 포맷 표시 (0 = 사용 안 함)
 Private Const BLOTTER_HEADER_ROW As Long = 1
 
 ' 변환 후 Paste 시트를 비울지 여부
@@ -107,7 +106,7 @@ Public Sub ConvertPaste()
 
     Dim msg As String
     msg = added & "건이 '" & SHEET_BLOTTER & "' 시트에 추가되었습니다." & vbCrLf & vbCrLf & _
-          "▶ 구분 코드와 Customer Rate을 입력하세요." & vbCrLf & _
+          "▶ 구분 칸의 포맷명을 실제 구분 코드로 바꾸고 Customer Rate을 입력하세요." & vbCrLf & _
           "▶ Rate 입력 시 반대 통화 금액이 자동 계산됩니다."
     If generic > 0 Then
         msg = msg & vbCrLf & vbCrLf & "⚠ 미등록 포맷 " & generic & "건을 추정 파싱했습니다 (노란색 표시)." & vbCrLf & _
@@ -131,7 +130,6 @@ Public Sub SetupWorkbook()
         ws.Cells(BLOTTER_HEADER_ROW, COL_USD).Value = "USD"
         ws.Cells(BLOTTER_HEADER_ROW, COL_CRATE).Value = "Customer Rate"
         ws.Cells(BLOTTER_HEADER_ROW, COL_IRATE).Value = "Interbank Rate"
-        If COL_SRC > 0 Then ws.Cells(BLOTTER_HEADER_ROW, COL_SRC).Value = "Src(자동)"
         ws.Rows(BLOTTER_HEADER_ROW).Font.Bold = True
     End If
 
@@ -337,7 +335,8 @@ Private Sub WriteRecord(ws As Worksheet, ByVal r As Long, rec As Variant)
     ws.Cells(r, COL_USD).NumberFormat = "#,##0.00"
     ws.Cells(r, COL_CRATE).NumberFormat = "#,##0.00"
 
-    If COL_SRC > 0 Then ws.Cells(r, COL_SRC).Value = fmt
+    ' 구분 칸에 인식된 포맷명을 미리 채움 → 실제 구분 코드로 덮어쓰면 됨
+    ws.Cells(r, COL_GUBUN).Value = fmt
 
     ' 미등록 포맷 추정 결과는 노란색으로 표시 → 수동 확인
     If fmt = "GENERIC" Then
@@ -346,11 +345,9 @@ Private Sub WriteRecord(ws As Worksheet, ByVal r As Long, rec As Variant)
 End Sub
 
 Private Function LastBlotterRow(ws As Worksheet) As Long
-    Dim c As Long, last As Long, v As Long, maxCol As Long
-    maxCol = COL_IRATE
-    If COL_SRC > maxCol Then maxCol = COL_SRC
+    Dim c As Long, last As Long, v As Long
     last = BLOTTER_HEADER_ROW
-    For c = COL_GUBUN To maxCol
+    For c = COL_GUBUN To COL_IRATE
         v = ws.Cells(ws.Rows.Count, c).End(xlUp).Row
         If v > last Then last = v
     Next c
