@@ -408,8 +408,9 @@ Private Sub WriteRecord(ws As Worksheet, ByVal r As Long, rec As Variant)
             "=IF(" & rateAddr & "="""","""",ROUND(-" & usdAddr & "*" & rateAddr & ",0))"
     End If
 
-    ws.Cells(r, COL_KRW).NumberFormat = "#,##0.00"
-    ws.Cells(r, COL_USD).NumberFormat = "#,##0.00"
+    ' 양수 = 검정 / 음수 = 빨강 (마이너스 부호 유지)
+    ws.Cells(r, COL_KRW).NumberFormat = "#,##0.00;[Red]-#,##0.00"
+    ws.Cells(r, COL_USD).NumberFormat = "#,##0.00;[Red]-#,##0.00"
     ws.Cells(r, COL_CRATE).NumberFormat = "#,##0.00"
 
     ' 구분 칸에 인식된 포맷명을 미리 채움 → 실제 구분 코드로 덮어쓰면 됨
