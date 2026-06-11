@@ -19,8 +19,14 @@ Option Explicit
 '
 '   등록된 파서:
 '     TryUbsFxOrderList     : "11-Jun-26 BUY KRW 2,439,375,000.00 Sell USD No Round"
-'     TryUbsFxRequest       : "Sell KRW 872,000,000 USD 20260611"
+'     TryFxRequest          : "Sell KRW 872,000,000 USD 20260611" (UBS)
+'                             "SELL KRW 1,125,136,816 USD 6/11/26" (GS, SPOT 표기 지원)
+'                             "SELL KRW (Kospi) 6,062,500 USD 10/06/26" (GS, 주석 허용)
 '     TryUbsStockSettlement : 주식 결제내역 (ISIN KR+숫자10자리 토큰 기준)
+'     TryGsProductOrder     : "GSI USD KRW Buy 31,505,187.00 KRW 12-Jun-2026 ..."
+'                             (Buy/Sell은 Qty 통화 기준: Buy = KRW 매수 = 음수)
+'     TryGsBackToBack       : "19810091287 2026-06-05 ... B KRW 4,005,376,488.00 1535.25 USD"
+'                             환율이 채워져 있는 백투백 거래 → 블로터에 넣지 않고 건너뜀!
 '     TryGeneric            : 미등록 포맷 폴백 (날짜+BUY/SELL+통화+금액 탐색)
 '
 ' 부호 규칙: 고객이 "매수"하는 통화 = 음수(-), 반대 통화 = 양수(+)
@@ -78,21 +84,29 @@ Public Sub ConvertPaste()
     ' 라인별 파싱: 각 레코드 = Array(밸류데이트, 통화, 부호 적용된 금액, 포맷명)
     Dim recs As New Collection
     Dim ln As Variant, rec As Variant
-    Dim skipped As Long, generic As Long
+    Dim skipped As Long, generic As Long, b2b As Long
     For Each ln In lines
         rec = ParseLine(CStr(ln))
         If IsArray(rec) Then
-            recs.Add rec
-            If rec(3) = "GENERIC" Then generic = generic + 1
+            If rec(3) = "B2B-SKIP" Then
+                b2b = b2b + 1            ' 백투백 거래: 블로터 제외
+            Else
+                recs.Add rec
+                If rec(3) = "GENERIC" Then generic = generic + 1
+            End If
         Else
             skipped = skipped + 1
         End If
     Next ln
 
     If recs.Count = 0 Then
-        MsgBox "인식 가능한 거래 라인이 없습니다." & vbCrLf & _
-               "(헤더·서명 등 " & skipped & "줄은 무시되었습니다)" & vbCrLf & vbCrLf & _
-               "새로운 고객 포맷이라면 README의 '새 포맷 추가'를 참고해 파서를 등록하세요.", vbExclamation
+        Dim noneMsg As String
+        noneMsg = "인식 가능한 거래 라인이 없습니다." & vbCrLf & _
+                  "(헤더·서명 등 " & skipped & "줄은 무시되었습니다)"
+        If b2b > 0 Then noneMsg = noneMsg & vbCrLf & "백투백 거래 " & b2b & "건은 정책상 블로터에 넣지 않습니다."
+        noneMsg = noneMsg & vbCrLf & vbCrLf & _
+                  "새로운 고객 포맷이라면 README의 '새 포맷 추가'를 참고해 파서를 등록하세요."
+        MsgBox noneMsg, vbExclamation
         Exit Sub
     End If
 
@@ -118,6 +132,7 @@ Public Sub ConvertPaste()
         msg = msg & vbCrLf & vbCrLf & "⚠ 미등록 포맷 " & generic & "건을 추정 파싱했습니다 (노란색 표시)." & vbCrLf & _
               "   금액·부호·날짜를 반드시 확인하세요!"
     End If
+    If b2b > 0 Then msg = msg & vbCrLf & "백투백 거래 " & b2b & "건은 정책상 블로터에 넣지 않았습니다."
     If skipped > 0 Then msg = msg & vbCrLf & "(헤더·서명 등 " & skipped & "줄 무시됨)"
     msg = msg & vbCrLf & vbCrLf & "잘못 변환됐다면 [실행취소] 버튼으로 방금 추가한 " & added & "건을 삭제할 수 있습니다."
     MsgBox msg, IIf(generic > 0, vbExclamation, vbInformation)
@@ -240,8 +255,10 @@ Private Function ParseLine(ByVal raw As String) As Variant
 
     Dim rec As Variant
     rec = TryUbsFxOrderList(t)
-    If Not IsArray(rec) Then rec = TryUbsFxRequest(t)
+    If Not IsArray(rec) Then rec = TryFxRequest(t)
     If Not IsArray(rec) Then rec = TryUbsStockSettlement(t)
+    If Not IsArray(rec) Then rec = TryGsProductOrder(t)
+    If Not IsArray(rec) Then rec = TryGsBackToBack(t)
     ' --- 새 고객사 파서는 여기에 추가 ---
     If Not IsArray(rec) Then rec = TryGeneric(t)
     ParseLine = rec
@@ -266,24 +283,83 @@ Private Function TryUbsFxOrderList(t() As String) As Variant
     TryUbsFxOrderList = Array(vd, ccy, amt, "UBS-FXLIST")
 End Function
 
-' [UBS FX 단건 요청] "Sell KRW 872,000,000 USD 20260611"  (밸류데이트는 뒤쪽 토큰에서 탐색)
-Private Function TryUbsFxRequest(t() As String) As Variant
+' [FX 단건 요청 — UBS/GS 공용]
+'   UBS: "Sell KRW 872,000,000 USD 20260611"
+'   GS : "SELL KRW 1,125,136,816 USD 6/11/26"  /  "BUY KRW 1,106,478,345.00 USD 6/10/2026 ..."
+'   GS : "SELL KRW (Kospi) 6,062,500 USD 10/06/26 ..."  ← 통화 뒤 주석 토큰 허용
+'   밸류데이트는 뒤쪽 토큰에서 탐색하며, "SPOT" 표기는 2영업일 후로 해석
+Private Function TryFxRequest(t() As String) As Variant
     If UBound(t) < 3 Then Exit Function
     Dim side As String: side = UCase$(t(0))
     If side <> "BUY" And side <> "SELL" Then Exit Function
     Dim ccy As String: ccy = UCase$(t(1))
     If ccy <> "KRW" And ccy <> "USD" Then Exit Function
-    Dim amt As Double
-    If Not TryParseNum(t(2), amt) Then Exit Function
+
+    ' 금액: 통화 뒤 1~3번째 토큰 중 첫 숫자 ("(Kospi)" 같은 주석은 건너뜀)
+    Dim amt As Double, ai As Long, aiMax As Long, foundAmt As Boolean
+    aiMax = UBound(t)
+    If aiMax > 4 Then aiMax = 4
+    For ai = 2 To aiMax
+        If TryParseNum(t(ai), amt) Then foundAmt = True: Exit For
+    Next ai
+    If Not foundAmt Then Exit Function
 
     Dim vd As Date, i As Long, found As Boolean
-    For i = UBound(t) To 3 Step -1
-        If TryParseDate(t(i), vd) Then found = True: Exit For
+    For i = UBound(t) To ai + 1 Step -1
+        If UCase$(t(i)) = "SPOT" Then
+            vd = AddBizDays(Date, 2)
+            found = True
+            Exit For
+        ElseIf TryParseDate(t(i), vd) Then
+            found = True
+            Exit For
+        End If
     Next i
     If Not found Then Exit Function
 
     If side = "BUY" Then amt = -amt          ' 고객 매수 통화 = 음수
-    TryUbsFxRequest = Array(vd, ccy, amt, "UBS-FXREQ")
+    TryFxRequest = Array(vd, ccy, amt, "FXREQ")
+End Function
+
+' [GS 주문 리스트] "GSI USD KRW Buy 31,505,187.00 KRW 12-Jun-2026 069802080 OR8735822 26818"
+'   구조: <Entity> <통화쌍 2토큰> <Buy/Sell> <Qty> <Qty통화> <결제일> ...
+'   Buy/Sell은 Qty 통화 기준: Buy = 고객이 Qty 통화(KRW) 매수 = 음수
+Private Function TryGsProductOrder(t() As String) As Variant
+    If UBound(t) < 6 Then Exit Function
+    If Not IsCcy(t(1)) Or Not IsCcy(t(2)) Then Exit Function
+    Dim side As String: side = UCase$(t(3))
+    If side <> "BUY" And side <> "SELL" Then Exit Function
+    Dim amt As Double
+    If Not TryParseNum(t(4), amt) Then Exit Function
+    If Not IsCcy(t(5)) Then Exit Function
+    Dim vd As Date
+    If Not TryParseDate(t(6), vd) Then Exit Function
+
+    If side = "BUY" Then amt = -amt          ' 고객 매수 통화(Qty 통화) = 음수
+    TryGsProductOrder = Array(vd, UCase$(t(5)), amt, "GS-ORDER")
+End Function
+
+' [GS 백투백 거래 — 블로터 제외!]
+'   "19810091287 2026-06-05 3403604609 B KRW 4,005,376,488.00 1535.25 USD For futures"
+'   환율(FX rate)이 이미 채워져 있는 골드만 백투백 거래는 부킹만 하면 되므로
+'   블로터에 입력하지 않는다는 운영 정책에 따라, 인식 후 건너뜀 처리.
+'   ※ 정책이 바뀌어 블로터에 넣어야 하면 이 함수와 ConvertPaste의 "B2B-SKIP" 분기를 수정할 것.
+Private Function TryGsBackToBack(t() As String) As Variant
+    If UBound(t) < 5 Then Exit Function
+    Dim i As Long, amt As Double, rate As Double
+    For i = 0 To UBound(t) - 4
+        If (UCase$(t(i)) = "B" Or UCase$(t(i)) = "S") Then
+            If IsCcy(t(i + 1)) Then
+                If TryParseNum(t(i + 2), amt) And TryParseNum(t(i + 3), rate) Then
+                    If IsCcy(t(i + 4)) Then
+                        ' B/S + 통화 + 금액 + 환율 + 상대통화 패턴 = 백투백
+                        TryGsBackToBack = Array(Date, UCase$(t(i + 1)), amt, "B2B-SKIP")
+                        Exit Function
+                    End If
+                End If
+            End If
+        End If
+    Next i
 End Function
 
 ' [UBS 주식 결제내역] ISIN(KR + 숫자 10자리) 토큰을 기준점으로 파싱
@@ -530,7 +606,9 @@ Private Function TryParseNum(ByVal s As String, ByRef v As Double) As Boolean
     TryParseNum = True
 End Function
 
-' 지원 날짜 형식: yyyymmdd / dd-Mmm-yy / dd-Mmm-yyyy / yyyy-mm-dd
+' 지원 날짜 형식: yyyymmdd / dd-Mmm-yy / dd-Mmm-yyyy / yyyy-mm-dd / M/D/Y(슬래시)
+'   슬래시 날짜는 M/D와 D/M이 둘 다 가능하면 "오늘과 가까운 쪽"을 선택 (동률이면 M/D 우선)
+'   — GS 등에서 6/10/2026(MM/DD)과 10/06/26(DD/MM) 표기가 혼재하기 때문
 Private Function TryParseDate(ByVal s As String, ByRef d As Date) As Boolean
     s = Trim$(s)
     On Error GoTo fail
@@ -542,6 +620,30 @@ Private Function TryParseDate(ByVal s As String, ByRef d As Date) As Boolean
     End If
 
     Dim p() As String
+
+    p = Split(s, "/")
+    If UBound(p) = 2 Then
+        Dim ys As String
+        ys = LeadingDigits(p(2))   ' "26ID"처럼 붙은 텍스트도 연도만 추출
+        If IsAllDigits(p(0)) And IsAllDigits(p(1)) And Len(ys) > 0 And Len(p(0)) <= 2 And Len(p(1)) <= 2 Then
+            Dim a As Long, b As Long, yy As Long
+            a = CLng(p(0)): b = CLng(p(1)): yy = CLng(ys)
+            If yy < 100 Then yy = yy + 2000
+            Dim d1 As Date, d2 As Date, ok1 As Boolean, ok2 As Boolean
+            If a >= 1 And a <= 12 And b >= 1 And b <= 31 Then ok1 = True: d1 = DateSerial(yy, a, b)   ' M/D
+            If b >= 1 And b <= 12 And a >= 1 And a <= 31 And a <> b Then ok2 = True: d2 = DateSerial(yy, b, a) ' D/M
+            If ok1 And ok2 Then
+                If Abs(CDbl(d2) - CDbl(Date)) < Abs(CDbl(d1) - CDbl(Date)) Then d = d2 Else d = d1
+                TryParseDate = True
+            ElseIf ok1 Then
+                d = d1: TryParseDate = True
+            ElseIf ok2 Then
+                d = d2: TryParseDate = True
+            End If
+            Exit Function
+        End If
+    End If
+
     p = Split(s, "-")
     If UBound(p) = 2 Then
         If Len(p(0)) = 4 And IsAllDigits(p(0)) And IsAllDigits(p(1)) And IsAllDigits(p(2)) Then
@@ -591,6 +693,14 @@ Private Function MonthFromEng(ByVal s As String) As Long
         Case "NOV": MonthFromEng = 11
         Case "DEC": MonthFromEng = 12
     End Select
+End Function
+
+Private Function LeadingDigits(ByVal s As String) As String
+    Dim i As Long
+    For i = 1 To Len(s)
+        If Mid$(s, i, 1) < "0" Or Mid$(s, i, 1) > "9" Then Exit For
+    Next i
+    LeadingDigits = Left$(s, i - 1)
 End Function
 
 Private Function IsAllDigits(ByVal s As String) As Boolean
