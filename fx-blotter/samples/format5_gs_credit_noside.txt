@@ -1,0 +1,17 @@
+       CLIENT                                             GS ACCT NO.
+FX No. CREDIT / DEBIT CCY AMOUNT        VS.CCY VALUE DATE (8 digits)  GEC Top a/c ID / Bank A/C Local FX Bank Entity FX ACCOUNT
+2      CREDIT         KRW 1,300,000,000 USD    5/21/2026  00100001    C0000001    19800000000   SCB           GSIL   3400000000
+Sell KRW
+CCY           AMOUNT        VS.CCY VALUE DATE
+KRW           859,000,000   USD    5/27/2026
+ID / Bank A/C Local FX Bank Entity FX ACCOUNT
+19800000000   SCB           GSIL   3400000000
+GS Entity Product Side Qty            Qty Unit Settlement Date Onshore Account Order Id  Investor ID          Notes
+GSCO      USD KRW Sell 441,000,000.00 KRW      22-May-2026     060000001       OR0000003 254900XXXXXXXXXXXX00
+     Currency vs USD Amount         Value Date Custodian Account Investor ID
+Sell KRW             61,000,000     5/22/2026  002000001         11793
+Buy  KRW             833,000,000    5/22/2026  060000002         11793
+Sell KRW             21,700,000,000 5/22/2026  060000003         11793
+Client        CCY            Amount      vs. CCY       Value Date
+Buy/ Sell                                              (MM/DD/YYYY)
+Sell          KRW            377,600,000 USD           5/21/2026

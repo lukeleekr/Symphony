@@ -1,0 +1,5 @@
+Value Date Buy/Sell Ccy Amount           Buy/Sell Ccy Amount FX Rate Round
+11-Jun-26  BUY      KRW 1,000,000,000.00 Sell     USD                No Round
+11-Jun-26  BUY      KRW 25,000,000.00    Sell     USD                No Round
+11-Jun-26  SELL     KRW 8,500,000.00     Buy      USD                No Round
+11-Jun-26  BUY      USD 300,000.00       Sell     KRW                No Round

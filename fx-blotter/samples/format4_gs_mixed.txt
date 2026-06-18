@@ -1,0 +1,15 @@
+BUY / SELL    CCY           AMOUNT        VS.CCY     VALUE DATE (SPOT OR MM/DD/YY)
+SELL          KRW           1,000,000,000 USD        6/11/26
+ID / Bank A/C Local FX Bank Entity        FX ACCOUNT
+19800000000   SCB           GSIL          3400000000
+CLIENT
+CREDIT / DEBIT     CCY         AMOUNT           VS.CCY VALUE DATE            GEC Top a/c  ID / Bank A/C Local FX Bank Entity      FX ACCOUNT
+BUY                KRW         1,100,000,000.00 USD    6/10/2026             C0000001     19800000000   SCB           GSIL        3400000000
+CLIENT  BUY / SELL CCY         AMOUNT           VS.CCY VALUE DATE (MM/DD/YY) Bank Account Local FX Bank Client Entity FX ACCOUNT
+SELL               KRW (Kospi) 6,000,000        USD    10/06/26              19800000000  SCB           GSI           03400000000
+GS Entity Product Side Qty            Qty Unit Settlement Date Onshore Account Order Id  Investor ID Notes
+GSI       USD KRW Buy  31,000,000.00  KRW      12-Jun-2026     060000001       OR0000001 26818
+GSI       USD KRW Buy  350,000,000.00 KRW      12-Jun-2026     050000001       OR0000002 46690
+INVESTOR ID Settlement Date (YYYY-MM-DD) FX ACCOUNT B/S CCY1 KRW              FX      CCY2 USD PURPOSE (IPO, FUTURES)
+19800000000 2026-06-05                   3400000000 B   KRW  4,000,000,000.00 1535.25 USD      For futures
+821         2026-06-05                              S   KRW  4,000,000,000.00 1535.25 USD

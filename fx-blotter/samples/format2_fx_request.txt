@@ -1,0 +1,2 @@
+Side From Currency 1 Amount Ccy 1 To Currency 2 Amount Ccy 2 Value Date FX Rate
+Sell KRW             500,000,000  USD                        20260611
